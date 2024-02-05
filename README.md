@@ -1,4 +1,4 @@
-# Scanpy-pySCENIC
+# Purpose
 A complete workflow involving integrating gene regulatory network inference tool pySCENIC, with Scanpy analysis of scRNA-seq data. This workflow employs the CLI implementation of pySCENIC, to generate regulon enrichment scores across cells from an scRNA-seq experiment in loom format. 
 
 # Inclusions:
