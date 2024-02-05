@@ -1,0 +1,253 @@
+---
+title: "merge_h5"
+author: "Davin Marro"
+date: "2024-01-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Matrix)
+library(Seurat)
+library(scCustomize)
+library(SeuratDisk)
+library(glue)
+library(SoupX)
+library(scDblFinder)
+
+```
+
+```{r}
+# Initialize a sample dictionary. 23 samples in total
+sample_dict = c(
+  L59804 = "P3_Fzd1KO_stim",
+  L59805 = "P3_Ctrl_stim",
+  L60076 = "P3_Ctrl_NE",
+  L60075 = "P3_Fzd1KO_NE",
+  L59806 = "P7_Fzd1KO_stim",
+  L59807 = "P7_Ctrl_stim",
+  L60078 = "P7_Ctrl_NE",
+  L60077 = "P7_Fzd1KO_NE",
+  L49785 = "P10_Ctrl_NE",
+  L49784 = "P10_Fzd1KO_NE",
+  L48127 = "P7_Ctrl_NE_2",
+  L48126 = "P7_Fzd1KO_NE_2",
+  L48123 = "P5_Ctrl_NE",
+  L48122 = "P5_Fzd1KO_NE",
+  L34690 = "P21_Ctrl_NE",
+  L34689 = "P0_Ctrl_NE",
+  L34688 = "P7_Ctrl_NE_3",
+  L34687 = "P3_Ctrl_NE_2",
+  L35293 = "Adult_Ctrl_NE",
+  L35292 = "P14_Ctrl_NE",
+  L35291 = "P10_Ctrl_NE_2",
+  L35290 = "E18_Ctrl_NE",
+  L35289 = "E13_Ctrl_NE"
+)
+```
+
+```{r}
+# Assign pathnames to project folders, we take 10x filtered and raw matrices for SoupX. 
+MOLNG2407_path = '/home/dm2763/projects/scenic/pyscenic/ygw_OE/Filtered_mtx/MOLNG2407'
+MOLNG2453_path = '/home/dm2763/projects/scenic/pyscenic/ygw_OE/Filtered_mtx/MOLNG2453'
+MOLNG3334_path = '/home/dm2763/projects/scenic/pyscenic/ygw_OE/Filtered_mtx/MOLNG3334'
+MOLNG3650_path = '/home/dm2763/projects/scenic/pyscenic/ygw_OE/Filtered_mtx/MOLNG3650'
+
+MOLNG2407_R_path = '/home/dm2763/projects/scenic/pyscenic/ygw_OE/Raw_mtx/MOLNG2407_RAW'
+MOLNG2453_R_path = '/home/dm2763/projects/scenic/pyscenic/ygw_OE/Raw_mtx/MOLNG2453_RAW'
+MOLNG3334_R_path = '/home/dm2763/projects/scenic/pyscenic/ygw_OE/Raw_mtx/MOLNG3334_RAW' 
+MOLNG3650_R_path = '/home/dm2763/projects/scenic/pyscenic/ygw_OE/Raw_mtx/MOLNG3650_RAW' 
+
+path_list = c(MOLNG2407_path, MOLNG2453_path, MOLNG3334_path, MOLNG3650_path)
+path_list_R = c(MOLNG3650_R_path, MOLNG3334_R_path, MOLNG2453_R_path, MOLNG2407_R_path)
+```
+
+
+```{r}
+# Create a list of h5 objects based on the 10x data
+h5_files = list()
+for(path in path_list){
+  file_paths <- dir(path,full.names = TRUE)
+  file_names <- dir(path,full.names = FALSE)
+  setwd(path)
+  for(i in seq_along(file_paths)){
+    name <- file_names[[i]]
+    h5_data <- Read10X_h5(filename = file_paths[[i]],use.names = TRUE)
+    h5_files[[name]] <- h5_data 
+    print(paste("Generated Filtered H5 for sample:",name))
+  }
+  rm(h5_data)
+}
+```
+
+```{r}
+raw_h5_files = list()
+for(path in path_list_R){
+  file_paths <- dir(path,full.names = TRUE)
+  file_names <- dir(path,full.names = FALSE)
+  setwd(path)
+  for(i in seq_along(file_paths)){
+    name <- file_names[[i]]
+    h5_data <- Read10X_h5(filename = file_paths[[i]],use.names = TRUE)
+    raw_h5_files[[name]] <- h5_data 
+    print(paste("Generated Raw H5 for sample:",name))
+  }
+  rm(h5_data)
+}
+
+```
+
+
+```{r}
+names <- names(h5_files)
+seurat_objects <- list() 
+cell_ids = list()
+for(i in seq_along(h5_files)){
+  name <- names[[i]]
+  object <- CreateSeuratObject(counts = h5_files[[i]] , min.cells = 0, min.features = 200, project = sample_dict[[name]])
+  seurat_objects[[sample_dict[[name]]]] <- object
+  print(paste("Generated Seurat Object from:",name," as:",sample_dict[[name]]))
+  cell_ids <- c(cell_ids,sample_dict[[name]])
+}
+
+
+```
+
+
+```{r}
+# Validate order of cell.ids and objects
+test_points = c(1,5,10,15,20,23)
+check = 0
+for(number in test_points){
+  if(cell_ids[number] == names(seurat_objects)[number]){
+    print(paste("Passed at index: ", number))
+    check = check + 1
+  }
+}
+if(check <- length(test_points)){
+  print("Order is valid.")
+}
+```
+```{r}
+# Mad outlier function: credit to Sanbomics (https://www.youtube.com/watch?v=Zs4UEQ9LZ-Y) adapted from sc-best-practices
+mad_outlier <- function(object, metric, nmads){
+  M <- object@meta.data[[metric]]
+  median_M <- median(M, na.rm = TRUE)
+  mad_M <- mad(M, na.rm = TRUE)
+  outlier <- (M < (median_M - nmads * mad_M)) | (M > (median_M + nmads * mad_M))
+  return(outlier)
+}
+
+# Clustering function: credit to Sanbomics (https://www.youtube.com/watch?v=Zs4UEQ9LZ-Y) adatped from sc-best-practices
+get_soup_groups <- function(object){
+  object <- NormalizeData(object, verbose = FALSE)
+  object <- FindVariableFeatures(object = object, nfeatures = 2000,verbose = FALSE, selection.method = 'vst')
+  object <- ScaleData(object = object, verbose = FALSE)
+  object <- RunPCA(object = object, npcs = 20, verbose = FALSE)
+  object <- FindNeighbors(object = object, dims = 1:20, verbose = FALSE)
+  object <- FindClusters(object = object, resolution = 0.5, verbose = FALSE)
+  
+  return(object@meta.data[['seurat_clusters']])
+}
+
+add_soup_groups <- function(object){
+  object$soup_group <- get_soup_groups(object)
+  return(object)
+}
+
+make_soup <- function(object){
+  sample_id <- as.character()
+}
+```
+
+```{r}
+# Basic QC 
+processed_objects <- list() 
+for(i in seq_along(seurat_objects)){
+  object <- seurat_objects[[i]]
+  name <- names[[i]]
+  # normalize count matrix
+  object$log1p_total_counts <- log1p(object@meta.data$nCount_RNA)
+  object$log1p_n_genes_by_counts <- log1p(object@meta.data$nFeature_RNA)
+  
+  # Calculate percent mt 
+  object[["percent.mt"]] <- PercentageFeatureSet(object, pattern = "^mt-")
+  bool_vector <- !mad_outlier(object,'log1p_total_counts', 5) & !mad_outlier(object,'log1p_n_genes_by_counts', 5) & !mad_outlier(object,'percent.mt',3)
+  object <- subset(object, cells = which(bool_vector))
+  object <- add_soup_groups(object)
+  processed_objects[[name]] <- object
+  print(paste("Processed object:",name))
+}
+seurat_objects <- processed_objects
+rm(processed_objects)
+
+```
+
+
+```{r}
+processed_objects <- list()
+for(i in seq_along(seurat_objects)){
+  object <- seurat_objects[[i]]
+  name <- names(seurat_objects[i])
+  print(paste("Running SoupX on Object:", name))
+  
+  sample_id <- name
+  sc <- SoupChannel(raw_h5_files[[name]], object@assays$RNA@counts)
+  sc <- setClusters(sc, object$soup_group)
+  sc <- autoEstCont(sc, doPlot = FALSE)
+  out <- adjustCounts(sc, roundToInt = TRUE)
+  
+  object@assays$RNA@counts <- out
+  processed_objects[[name]] <- object
+}
+```
+
+```{r}
+# Check how much was filtered out 
+for(i in seq_along(seurat_objects)){
+  object <- seurat_objects[[i]]
+  name <- names(seurat_objects[i])
+  
+  original_sum <- sum(object@assays$RNA@counts)
+  filtered_sum <- sum(processed_objects[[name]]@assays$RNA@counts)
+  filtered_reads <- original_sum - filtered_sum
+  percent_filtered <- filtered_reads/original_sum * 100
+  print(paste("Filtered",filtered_reads,"reads from object",name))
+  print(paste("%",percent_filtered))
+}
+```
+```{r}
+# Doublet filtering via scDblFinder
+final_objects <- list()
+for(i in seq_along(processed_objects)){
+  set.seed(111)
+  object <- processed_objects[[i]]
+  name <- names(processed_objects[i])
+  print(paste("Scoring Doublets in Object:", name))
+  object_sce <- scDblFinder(GetAssayData(object, slot = "counts", clusters = object$soup_group),verbose = FALSE)
+  object$scDblFinder.score <- object_sce$scDblFinder.score
+  object$scDblFinder.class <- object_sce$scDblFinder.class
+  final_objects[[name]] <- object
+}
+```
+```{r}
+#Sample Metadata
+#final_objects[[1]]@meta.data
+```
+
+```{r}
+setwd("/home/dm2763/projects/scenic/pyscenic/ygw_OE/seurats")
+merged_seurat <- Merge_Seurat_List(final_objects, add.cell.ids = cell_ids, merge.data = TRUE)
+saveRDS(merged_seurat, "final_merged.rds")
+```
+
+```{r}
+setwd("/home/dm2763/projects/scenic/pyscenic/OE_final/loom")
+SeuratDisk::as.loom(merged_seurat, "final_merged.loom")
+```
+
+
+
